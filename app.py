@@ -165,8 +165,9 @@ with tab1:
                 """
                 
                 try:
+                    # Using the newer, more stable model for late 2025
                     response = client.models.generate_content(
-                        model='gemini-2.5-flash', 
+                        model='gemini-2.0-flash-exp', 
                         contents=prompt,
                         config=types.GenerateContentConfig(
                             tools=[google_search_tool],
