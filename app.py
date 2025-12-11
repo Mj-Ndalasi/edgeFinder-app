@@ -12,7 +12,7 @@ st.set_page_config(page_title="EdgeFinder AIS 8.0 (Phoenix)", layout="wide", pag
 
 # Load API Key
 try:
-    API_KEY = st.secrets["GOOGLE_API_KEY"]
+   API_KEY = st.secrets["GOOGLE_API_KEY"]
 except:
     # ⚠️ SECURITY WARNING: Only use this for local testing.
     API_KEY = "PASTE_YOUR_API_KEY_HERE"
