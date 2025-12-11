@@ -5,6 +5,7 @@ import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
+import time  # Added for retry logic
 
 # --- 1. CONFIGURATION & SETUP ---
 st.set_page_config(page_title="EdgeFinder AIS 8.0 (Phoenix)", layout="wide", page_icon="🔥")
@@ -20,16 +21,19 @@ client = genai.Client(api_key=API_KEY)
 # --- 2. DATABASE CONNECTION (GOOGLE SHEETS) ---
 SCOPES = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
+@st.cache_resource(ttl=600)  # Caching for stability and speed
 def get_database_connection():
     try:
         if "service_account" in st.secrets:
             creds_dict = dict(st.secrets["service_account"])
             creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPES)
             client_gs = gspread.authorize(creds)
-            sheet = client_gs.open("EdgeFinder_Database").sheet1
+            # FIXED: Used get_worksheet(0) instead of .sheet1 for reliability
+            sheet = client_gs.open("EdgeFinder_Database").get_worksheet(0)
             return sheet
         return None
     except Exception as e:
+        # Silently fail here to avoid messy errors on startup, handled in UI
         return None
 
 db = get_database_connection()
@@ -46,6 +50,10 @@ def get_learning_context():
         if df.empty:
             return "History: Clean Slate."
         
+        # Ensure 'Result' column exists to avoid crash
+        if 'Result' not in df.columns:
+            return "History: Database columns structure error."
+
         wins = df[df['Result'] == 'WON'].shape[0]
         total_graded = df[df['Result'].isin(['WON', 'LOST'])].shape[0]
         
@@ -60,8 +68,30 @@ def get_learning_context():
         elif win_rate > 60:
             insight += "🔥 STATUS: Green Zone. Authorized for 'PROTOCOL B' (Variance/High Upside)."
         return insight
-    except:
-        return "Error reading history."
+    except Exception as e:
+        return f"Error reading history: {str(e)}"
+
+# --- RETRY LOGIC FUNCTION ---
+def generate_safe_content(model_name, contents, config):
+    """Retries the API call if it hits a 503 Overloaded error."""
+    max_retries = 4
+    for attempt in range(max_retries):
+        try:
+            return client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=config
+            )
+        except Exception as e:
+            error_msg = str(e)
+            # Retry only on server errors (503) or rate limits (429)
+            if "503" in error_msg or "429" in error_msg:
+                wait_time = 2 ** (attempt + 1) # Exponential backoff: 2s, 4s, 8s...
+                st.toast(f"⚠️ AI Busy. Retrying in {wait_time}s... (Attempt {attempt+1}/{max_retries})", icon="⏳")
+                time.sleep(wait_time)
+            else:
+                raise e # If it's another error (like Auth), fail immediately
+    return None
 
 # --- AIS 8.0 MASTER PROMPT ---
 SYSTEM_INSTRUCTION_BASE = """
@@ -164,10 +194,11 @@ with tab1:
                 STEP 4: Generate the PHOENIX SLIP based on {history_context}.
                 """
                 
+                # --- EXECUTION WITH RETRY LOOP ---
                 try:
-                    # UPDATED: Using 'gemini-2.5-flash' (The stable, high-speed 2025 model)
-                    response = client.models.generate_content(
-                        model='gemini-2.5-flash', 
+                    # UPDATED: Using 'gemini-1.5-pro' for higher stability than flash
+                    response = generate_safe_content(
+                        model_name='gemini-1.5-pro',
                         contents=prompt,
                         config=types.GenerateContentConfig(
                             tools=[google_search_tool],
@@ -175,17 +206,20 @@ with tab1:
                         )
                     )
                     
-                    st.markdown("---")
-                    st.markdown(f"**🧠 NEURAL CONTEXT:** `{history_context}`")
-                    st.markdown(response.text)
-                    
-                    if db:
+                    if response:
                         st.markdown("---")
-                        if st.button("💾 Save Phoenix Slip"):
-                            current_time = datetime.now().strftime("%Y-%m-%d")
-                            db.append_row([current_time, sport, f"{home_team} vs {away_team}", "Pending", "0", "Pending"])
-                            st.toast("Bet Saved to Locker Room!")
-                            
+                        st.markdown(f"**🧠 NEURAL CONTEXT:** `{history_context}`")
+                        st.markdown(response.text)
+                        
+                        if db:
+                            st.markdown("---")
+                            if st.button("💾 Save Phoenix Slip"):
+                                current_time = datetime.now().strftime("%Y-%m-%d")
+                                db.append_row([current_time, sport, f"{home_team} vs {away_team}", "Pending", "0", "Pending"])
+                                st.toast("Bet Saved to Locker Room!")
+                    else:
+                        st.error("❌ ERROR: The AI models are currently overloaded. Please try again in 2-3 minutes.")
+                        
                 except Exception as e:
                     st.error(f"AIS Core Error: {e}")
 
@@ -207,14 +241,20 @@ with tab2:
                             required=True,
                         )
                     },
-                    num_rows="dynamic"
+                    num_rows="dynamic",
+                    use_container_width=True
                 )
                 
                 if st.button("🔄 Update Database"):
-                    updated_data = [edited_df.columns.values.tolist()] + edited_df.values.tolist()
-                    db.clear()
-                    db.update(updated_data)
-                    st.success("Database Updated! The AI will learn from this next time.")
+                    with st.spinner("Syncing to Cloud..."):
+                        # Convert to list of lists with headers
+                        updated_data = [edited_df.columns.values.tolist()] + edited_df.values.tolist()
+                        
+                        # SAFE UPDATE: Overwrite cells instead of deleting the sheet
+                        db.update(updated_data, "A1") 
+                        
+                        st.success("Database Updated! The AI will learn from this next time.")
+                        st.rerun()
             else:
                 st.info("No bets saved yet. Go to Scanner to add one.")
         except Exception as e:
