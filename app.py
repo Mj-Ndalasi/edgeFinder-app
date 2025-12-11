@@ -165,9 +165,9 @@ with tab1:
                 """
                 
                 try:
-                    # Using the newer, more stable model for late 2025
+                    # Switched to the reliable Standard Flash model to fix 429 Error
                     response = client.models.generate_content(
-                        model='gemini-2.0-flash-exp', 
+                        model='gemini-1.5-flash', 
                         contents=prompt,
                         config=types.GenerateContentConfig(
                             tools=[google_search_tool],
