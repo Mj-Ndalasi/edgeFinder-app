@@ -1,4 +1,3 @@
-Here's the latest update for the code:
 import streamlit as st
 from google import genai
 from google.genai import types
