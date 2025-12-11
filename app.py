@@ -165,9 +165,9 @@ with tab1:
                 """
                 
                 try:
-                    # Switched to the reliable Standard Flash model to fix 429 Error
+                    # UPDATED MODEL: Using 'gemini-1.5-flash-latest' to fix the 404 and 429 errors.
                     response = client.models.generate_content(
-                        model='gemini-1.5-flash', 
+                        model='gemini-1.5-flash-latest', 
                         contents=prompt,
                         config=types.GenerateContentConfig(
                             tools=[google_search_tool],
