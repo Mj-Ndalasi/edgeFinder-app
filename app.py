@@ -165,9 +165,9 @@ with tab1:
                 """
                 
                 try:
-                    # UPDATED MODEL: Using 'gemini-1.5-flash-latest' to fix the 404 and 429 errors.
+                    # Using 'gemini-2.0-flash' (Stable) - Faster, Newer, No 'Exp' Limit
                     response = client.models.generate_content(
-                        model='gemini-1.5-flash-latest', 
+                        model='gemini-2.0-flash', 
                         contents=prompt,
                         config=types.GenerateContentConfig(
                             tools=[google_search_tool],
