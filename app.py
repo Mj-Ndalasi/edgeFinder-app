@@ -165,9 +165,9 @@ with tab1:
                 """
                 
                 try:
-                    # Using 'gemini-2.0-flash' (Stable) - Faster, Newer, No 'Exp' Limit
+                    # UPDATED: Using 'gemini-2.5-flash' (The stable, high-speed 2025 model)
                     response = client.models.generate_content(
-                        model='gemini-2.0-flash', 
+                        model='gemini-2.5-flash', 
                         contents=prompt,
                         config=types.GenerateContentConfig(
                             tools=[google_search_tool],
