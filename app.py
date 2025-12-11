@@ -61,62 +61,55 @@ def get_learning_context():
     except Exception as e:
         return f"Error reading history: {str(e)}"
 
-# --- 🔥 THE BRUTE FORCE GENERATOR (Fixes 404 AND 503) ---
-def generate_ironclad(contents, config):
-    # We will try ALL these names. One of them WILL work.
+# --- 🔥 THE HYBRID GENERATOR ---
+def generate_hybrid(contents, use_search_tool, config):
+    # Model Priority List
     model_candidates = [
-        'gemini-1.5-flash',       # Standard Flash
-        'gemini-1.5-flash-001',   # Specific Version 001
-        'gemini-1.5-flash-002',   # Specific Version 002 (Newer)
-        'gemini-1.5-pro',         # Standard Pro
-        'gemini-1.5-pro-001',     # Specific Pro Version
-        'gemini-2.0-flash-exp'    # Experimental (If available)
+        'gemini-1.5-flash',
+        'gemini-1.5-flash-001',
+        'gemini-1.5-pro',
+        'gemini-2.0-flash-exp'
     ]
+    
+    # If using search, we need a tool object
+    tools_list = [types.Tool(google_search=types.GoogleSearch())] if use_search_tool else None
     
     last_error = None
     
-    # Progress Bar container
-    status_box = st.empty()
-
     for model_name in model_candidates:
-        # Retry loop for 503 (Overloaded) errors on this specific model
-        retries = 3
-        for attempt in range(retries):
-            try:
-                status_box.caption(f"🤖 Connecting to Core: **{model_name}** (Attempt {attempt+1})...")
+        try:
+            # Update config with specific tools for this run
+            run_config = types.GenerateContentConfig(
+                tools=tools_list,
+                system_instruction=config.system_instruction,
+                temperature=0.3
+            )
+            
+            return client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=run_config
+            )
+        except Exception as e:
+            error_msg = str(e)
+            last_error = e
+            
+            # If Quota Error (429) and we are using Search, we must STOP and warn user.
+            if ("429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg) and use_search_tool:
+                st.error("🚨 DAILY SEARCH QUOTA REACHED! Please switch to 'Manual Mode' to continue.")
+                return None
+            
+            # If just a model name error (404), try next model
+            if "404" in error_msg or "NOT_FOUND" in error_msg:
+                continue
                 
-                # ATTEMPT GENERATION
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=contents,
-                    config=config
-                )
+            # If Overloaded (503), wait brief moment
+            if "503" in error_msg:
+                time.sleep(2)
+                continue
                 
-                status_box.empty() # Clear status if successful
-                return response
-
-            except Exception as e:
-                error_msg = str(e)
-                last_error = e
-                
-                # CASE 1: MODEL NOT FOUND (404) -> WRONG NAME
-                if "404" in error_msg or "NOT_FOUND" in error_msg:
-                    # Break inner loop, move to next model name immediately
-                    break 
-                
-                # CASE 2: OVERLOADED (503) -> RIGHT NAME, BUSY SERVER
-                if "503" in error_msg or "overloaded" in error_msg or "429" in error_msg:
-                    wait = 2 * (attempt + 1)
-                    status_box.warning(f"⚠️ {model_name} is busy. Waiting {wait}s...")
-                    time.sleep(wait)
-                    continue
-                
-                # CASE 3: OTHER ERROR -> Crash immediately (e.g. API Key wrong)
-                status_box.error(f"Critical Error on {model_name}: {e}")
-                raise e
-                
-    # If we run out of models and retries
-    status_box.error(f"❌ SYSTEM FAILURE: All models failed. Last Error: {last_error}")
+    if last_error:
+        st.error(f"❌ System Error: {last_error}")
     return None
 
 # --- AIS 8.0 MASTER PROMPT ---
@@ -144,8 +137,8 @@ You must output your analysis in this EXACT format:
 **AUDIT:** [Green/Yellow/Red Zone Verdicts]
 
 **1. THE TRAFFIC LIGHT AUDIT**
-* **Home Status:** [Color] - [Reason]
-* **Away Status:** [Color] - [Reason]
+* **Home Status:** [Color] - [Reason (Cite Form/Fatigue if available)]
+* **Away Status:** [Color] - [Reason (Cite Form/Fatigue if available)]
 * **VERDICT:** [PLAYABLE / SKIP / TRAP]
 
 **2. THE PHOENIX SLIP (Max 3 Legs)**
@@ -163,6 +156,7 @@ st.markdown("""
 <style>
     .stApp { background-color: #0b0f19; color: #e0e0e0; }
     .stTextInput > div > div > input { background-color: #1a1f2e; color: white; border: 1px solid #30364d; }
+    .stTextArea > div > div > textarea { background-color: #1a1f2e; color: #00ffcc; border: 1px solid #30364d; font-family: monospace; }
     .metric-card { background-color: #131722; border: 1px solid #2a2e39; padding: 20px; border-radius: 12px; margin-bottom: 15px;}
     .stButton > button { background: linear-gradient(90deg, #FF416C 0%, #FF4B2B 100%); color: white; font-weight: bold; border: none; }
     div[data-testid="stDataFrame"] { background-color: #1a1f2e; }
@@ -192,56 +186,70 @@ with tab1:
         st.markdown('</div>', unsafe_allow_html=True)
 
     sport = st.selectbox("Sport", ["Football ⚽ (UEFA/Leagues)", "NBA 🏀", "NFL 🏈"])
-    sim_mode = st.checkbox("🔮 Enable 2025 Simulation Data Stream (For Paper Trading)")
+
+    # --- 🎛️ CONTROL CENTER ---
+    st.markdown("### 📡 DATA SOURCE")
+    mode = st.radio("Select Intelligence Source:", 
+             ["🟢 Auto-Pilot (Google Search)", "🟠 Manual Intel (Paste Data - Unlimited)"],
+             horizontal=True)
+
+    user_context = ""
+    if "Manual" in mode:
+        st.info("💡 **SCOUT INSTRUCTION:** Go to Flashscore/SofaScore. Copy the 'Match Summary', 'Lineups', or 'Last 5 Matches' and paste it below. The AI will extract the Fatigue & Form data for you.")
+        user_context = st.text_area("📋 Intel Stream (Paste Text Here)", height=150, placeholder="Example: \n- Liverpool played 3 days ago (Fatigue High)\n- Salah is benched\n- Last 5 games: W W L D W")
 
     if st.button("🚀 RUN TRAFFIC LIGHT AUDIT", use_container_width=True):
         if not home_team or not away_team:
             st.error("Enter both teams.")
         else:
-            # We move the spinner OUTSIDE so our custom status box can show updates
-            history_context = get_learning_context()
-            
-            sim_instruction = ""
-            if sim_mode:
-                sim_instruction = "IMPORTANT: The user is in a 2025 Simulation Timeline."
-
-            final_system_instruction = f"{SYSTEM_INSTRUCTION_BASE}\n\nCURRENT LEARNING CONTEXT: {history_context}\n{sim_instruction}"
-            
-            google_search_tool = types.Tool(google_search=types.GoogleSearch())
-            
-            prompt = f"""
-            Run a full PHOENIX AUDIT on {home_team} vs {away_team} ({sport}).
-            
-            STEP 1: USE GOOGLE SEARCH to find the *latest* lineups, injuries, and form.
-            STEP 2: Classify both teams as GREEN, YELLOW, or RED ZONE.
-            STEP 3: Check against the KILL SWITCH LAWS.
-            STEP 4: Generate the PHOENIX SLIP based on {history_context}.
-            """
-            
-            try:
-                # USE THE BRUTE FORCE GENERATOR
-                response = generate_ironclad(
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        tools=[google_search_tool],
-                        system_instruction=final_system_instruction
-                    )
-                )
+            with st.spinner("Connecting to AIS 8.0... Running Structural Diagnostics..."):
+                history_context = get_learning_context()
                 
-                if response:
-                    st.markdown("---")
-                    st.markdown(f"**🧠 NEURAL CONTEXT:** `{history_context}`")
-                    st.markdown(response.text)
+                # Determine source logic
+                use_search = "Auto" in mode
+                
+                final_system_instruction = f"{SYSTEM_INSTRUCTION_BASE}\n\nCURRENT LEARNING CONTEXT: {history_context}"
+                
+                prompt = f"""
+                Run a full PHOENIX AUDIT on {home_team} vs {away_team} ({sport}).
+                
+                SOURCE DATA: {"GOOGLE SEARCH (LIVE)" if use_search else "USER PROVIDED INTEL (BELOW)"}
+                
+                {f'🚨 USER INTEL:\n{user_context}' if not use_search else 'STEP 1: Search for LATEST Lineups, Injuries, and Schedule (Fatigue).'}
+                
+                CRITICAL INSTRUCTION: 
+                If using User Intel, extract FATIGUE (days since last game) and FORM (last 5 results) from the text to determine the Traffic Light Status.
+                
+                STEP 2: Classify both teams as GREEN, YELLOW, or RED ZONE.
+                STEP 3: Check against the KILL SWITCH LAWS.
+                STEP 4: Generate the PHOENIX SLIP based on {history_context}.
+                """
+                
+                try:
+                    # Pass the mock config object simply to carry instructions
+                    # The function 'generate_hybrid' handles the messy API logic
+                    class MockConfig:
+                        system_instruction = final_system_instruction
+                        
+                    response = generate_hybrid(
+                        contents=prompt,
+                        use_search_tool=use_search,
+                        config=MockConfig()
+                    )
                     
-                    if db:
+                    if response:
                         st.markdown("---")
-                        if st.button("💾 Save Phoenix Slip"):
-                            current_time = datetime.now().strftime("%Y-%m-%d")
-                            db.append_row([current_time, sport, f"{home_team} vs {away_team}", "Pending", "0", "Pending"])
-                            st.toast("Bet Saved to Locker Room!")
-                    
-            except Exception as e:
-                st.error(f"AIS Core Error: {e}")
+                        st.markdown(f"**🧠 NEURAL CONTEXT:** `{history_context}`")
+                        st.markdown(response.text)
+                        
+                        if db:
+                            st.markdown("---")
+                            if st.button("💾 Save Phoenix Slip"):
+                                current_time = datetime.now().strftime("%Y-%m-%d")
+                                db.append_row([current_time, sport, f"{home_team} vs {away_team}", "Pending", "0", "Pending"])
+                                st.toast("Bet Saved to Locker Room!")
+                except Exception as e:
+                    st.error(f"AIS Core Error: {e}")
 
 # === TAB 2: LOCKER ROOM (HISTORY) ===
 with tab2:
