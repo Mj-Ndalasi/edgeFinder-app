@@ -28,7 +28,6 @@ def get_database_connection():
             creds_dict = dict(st.secrets["service_account"])
             creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPES)
             client_gs = gspread.authorize(creds)
-            # Use get_worksheet(0) for stability
             sheet = client_gs.open("EdgeFinder_Database").get_worksheet(0)
             return sheet
         return None
@@ -62,50 +61,62 @@ def get_learning_context():
     except Exception as e:
         return f"Error reading history: {str(e)}"
 
-# --- 🔥 THE IRONCLAD GENERATOR (Fixes 404 AND 503) ---
+# --- 🔥 THE BRUTE FORCE GENERATOR (Fixes 404 AND 503) ---
 def generate_ironclad(contents, config):
-    # List of models to try in order of preference. 
-    # It will try the first one; if 404, it moves to the next.
+    # We will try ALL these names. One of them WILL work.
     model_candidates = [
-        'gemini-1.5-flash-001', # Most likely to work
-        'gemini-1.5-pro-001',   # Backup Pro
-        'gemini-1.5-flash',     # Generic Flash
-        'gemini-1.5-pro-latest' # Latest alias
+        'gemini-1.5-flash',       # Standard Flash
+        'gemini-1.5-flash-001',   # Specific Version 001
+        'gemini-1.5-flash-002',   # Specific Version 002 (Newer)
+        'gemini-1.5-pro',         # Standard Pro
+        'gemini-1.5-pro-001',     # Specific Pro Version
+        'gemini-2.0-flash-exp'    # Experimental (If available)
     ]
     
     last_error = None
+    
+    # Progress Bar container
+    status_box = st.empty()
 
     for model_name in model_candidates:
         # Retry loop for 503 (Overloaded) errors on this specific model
         retries = 3
         for attempt in range(retries):
             try:
-                # st.toast(f"Trying Model: {model_name}...", icon="🤖") # Uncomment for debugging
-                return client.models.generate_content(
+                status_box.caption(f"🤖 Connecting to Core: **{model_name}** (Attempt {attempt+1})...")
+                
+                # ATTEMPT GENERATION
+                response = client.models.generate_content(
                     model=model_name,
                     contents=contents,
                     config=config
                 )
+                
+                status_box.empty() # Clear status if successful
+                return response
+
             except Exception as e:
                 error_msg = str(e)
                 last_error = e
                 
-                # CASE 1: MODEL NOT FOUND (404) -> Break inner loop, try next model immediately
+                # CASE 1: MODEL NOT FOUND (404) -> WRONG NAME
                 if "404" in error_msg or "NOT_FOUND" in error_msg:
+                    # Break inner loop, move to next model name immediately
                     break 
                 
-                # CASE 2: OVERLOADED (503) -> Wait and retry same model
+                # CASE 2: OVERLOADED (503) -> RIGHT NAME, BUSY SERVER
                 if "503" in error_msg or "overloaded" in error_msg or "429" in error_msg:
                     wait = 2 * (attempt + 1)
-                    st.toast(f"⚠️ {model_name} Busy. Retrying in {wait}s...", icon="⏳")
+                    status_box.warning(f"⚠️ {model_name} is busy. Waiting {wait}s...")
                     time.sleep(wait)
                     continue
                 
-                # CASE 3: OTHER ERROR (Auth, etc) -> Crash immediately
+                # CASE 3: OTHER ERROR -> Crash immediately (e.g. API Key wrong)
+                status_box.error(f"Critical Error on {model_name}: {e}")
                 raise e
                 
     # If we run out of models and retries
-    st.error(f"❌ ALL MODELS FAILED. Last Error: {last_error}")
+    status_box.error(f"❌ SYSTEM FAILURE: All models failed. Last Error: {last_error}")
     return None
 
 # --- AIS 8.0 MASTER PROMPT ---
@@ -187,50 +198,50 @@ with tab1:
         if not home_team or not away_team:
             st.error("Enter both teams.")
         else:
-            with st.spinner("Connecting to AIS 8.0... Scanning Traffic Lights... Applying Kill Switches..."):
-                history_context = get_learning_context()
-                
-                sim_instruction = ""
-                if sim_mode:
-                    sim_instruction = "IMPORTANT: The user is in a 2025 Simulation Timeline."
+            # We move the spinner OUTSIDE so our custom status box can show updates
+            history_context = get_learning_context()
+            
+            sim_instruction = ""
+            if sim_mode:
+                sim_instruction = "IMPORTANT: The user is in a 2025 Simulation Timeline."
 
-                final_system_instruction = f"{SYSTEM_INSTRUCTION_BASE}\n\nCURRENT LEARNING CONTEXT: {history_context}\n{sim_instruction}"
-                
-                google_search_tool = types.Tool(google_search=types.GoogleSearch())
-                
-                prompt = f"""
-                Run a full PHOENIX AUDIT on {home_team} vs {away_team} ({sport}).
-                
-                STEP 1: USE GOOGLE SEARCH to find the *latest* lineups, injuries, and form.
-                STEP 2: Classify both teams as GREEN, YELLOW, or RED ZONE.
-                STEP 3: Check against the KILL SWITCH LAWS.
-                STEP 4: Generate the PHOENIX SLIP based on {history_context}.
-                """
-                
-                try:
-                    # USE THE NEW IRONCLAD FUNCTION
-                    response = generate_ironclad(
-                        contents=prompt,
-                        config=types.GenerateContentConfig(
-                            tools=[google_search_tool],
-                            system_instruction=final_system_instruction
-                        )
+            final_system_instruction = f"{SYSTEM_INSTRUCTION_BASE}\n\nCURRENT LEARNING CONTEXT: {history_context}\n{sim_instruction}"
+            
+            google_search_tool = types.Tool(google_search=types.GoogleSearch())
+            
+            prompt = f"""
+            Run a full PHOENIX AUDIT on {home_team} vs {away_team} ({sport}).
+            
+            STEP 1: USE GOOGLE SEARCH to find the *latest* lineups, injuries, and form.
+            STEP 2: Classify both teams as GREEN, YELLOW, or RED ZONE.
+            STEP 3: Check against the KILL SWITCH LAWS.
+            STEP 4: Generate the PHOENIX SLIP based on {history_context}.
+            """
+            
+            try:
+                # USE THE BRUTE FORCE GENERATOR
+                response = generate_ironclad(
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        tools=[google_search_tool],
+                        system_instruction=final_system_instruction
                     )
+                )
+                
+                if response:
+                    st.markdown("---")
+                    st.markdown(f"**🧠 NEURAL CONTEXT:** `{history_context}`")
+                    st.markdown(response.text)
                     
-                    if response:
+                    if db:
                         st.markdown("---")
-                        st.markdown(f"**🧠 NEURAL CONTEXT:** `{history_context}`")
-                        st.markdown(response.text)
-                        
-                        if db:
-                            st.markdown("---")
-                            if st.button("💾 Save Phoenix Slip"):
-                                current_time = datetime.now().strftime("%Y-%m-%d")
-                                db.append_row([current_time, sport, f"{home_team} vs {away_team}", "Pending", "0", "Pending"])
-                                st.toast("Bet Saved to Locker Room!")
-                        
-                except Exception as e:
-                    st.error(f"AIS Core Error: {e}")
+                        if st.button("💾 Save Phoenix Slip"):
+                            current_time = datetime.now().strftime("%Y-%m-%d")
+                            db.append_row([current_time, sport, f"{home_team} vs {away_team}", "Pending", "0", "Pending"])
+                            st.toast("Bet Saved to Locker Room!")
+                    
+            except Exception as e:
+                st.error(f"AIS Core Error: {e}")
 
 # === TAB 2: LOCKER ROOM (HISTORY) ===
 with tab2:
